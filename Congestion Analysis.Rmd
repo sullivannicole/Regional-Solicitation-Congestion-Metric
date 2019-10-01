@@ -1,0 +1,144 @@
+---
+title: "Congestion Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Import packages
+
+If you've never imported before, you'll need to run `install.packages("name of package here")` once.  After that, the packages will live in your local library.  All you need to do to import them is run the code chunk below.
+
+```{r}
+library(data.table)
+library(tidyverse)
+library(plotly)
+library(extrafont)
+library(sf)
+library(leaflet)
+extrafont::loadfonts()
+```
+
+# Import StreetLight (SL) data
+
+These two csv files were created from two different SL projects.  We used two projects because the maximum zones (in this case, a zone = a road segment) SL permits in a single congestion analysis project is 5,000.
+
+```{r}
+congestion_1 <- fread("StL Tables/82850_CongAnal_1_4500_92519_sa_all.csv")
+congestion_2 <- fread("StL Tables/82851_CongAnal_4501_8995_92519_sa_all.csv")
+
+# Combine tables to create one table
+congestion <- bind_rows(congestion_1, congestion_2)
+
+# Make codes tables
+day_types <- congestion %>%
+  select(`Day Type`) %>%
+  unique()
+
+day_parts <- congestion %>%
+  select(`Day Part`) %>%
+  unique()
+
+# Select relevant variables & rename to names that are more convenient to work with; create day_type_code and day_part_code variables so it's not necessary to type out entire descripter when filtering
+congestion_tidy <- congestion %>%
+  dplyr::select(`Zone ID`, `Day Type`, `Day Part`, `Avg All Segment Speed (mph)`) %>%
+  rename(id = `Zone ID`,
+         day_type = `Day Type`,
+         day_part = `Day Part`,
+         avg_spd = `Avg All Segment Speed (mph)`) %>%
+  separate(day_type, into = c("day_type_code", "day_type_desc"), sep = 1) %>%
+  separate(day_part, into = c("day_part_code", "day_part_desc"), sep = 2) %>%
+  mutate(day_type_desc = str_replace(day_type_desc, pattern = ": ", replacement = ""),
+         day_part_desc = str_replace(day_part_desc, pattern = ": ", replacement = ""))
+
+# Select min speed for weekdays
+congestion_wkday <- congestion_tidy %>%
+  filter(day_type_code == 1 & day_part_code != "00" & day_part_code != "02" & day_part_code != "09" & day_part_code != "19") %>% # Don't include all day, off-peak, peak AM, or peak PM
+  group_by(id) %>%
+  mutate(min_spd = min(avg_spd)) %>%
+  ungroup() %>%
+  filter(avg_spd == min_spd) # Note that some segments have multiple hours with the same speed that is the min - will cause duplicates
+
+# Look at duplicates (hours with same speed as min)
+congestion_dups <- congestion_wkday %>%
+  group_by(id) %>%
+  count()
+
+# Join back counts of hours to detailed dataset
+congestion_check <- left_join(congestion_wkday, congestion_dups, by = "id")
+
+# See how many times the overnight hours appear as the minimum speed (and are the only hour that occurs)
+check_plot <- congestion_check %>%
+  mutate(day_part_code = as.numeric(day_part_code)) %>%
+  mutate(min_hour_cat = ifelse(n == 1, "One hour is min", "Multiple hours are min")) %>%
+  ggplot(aes(fct_reorder(day_part_desc, day_part_code), fill = min_hour_cat)) +
+  geom_bar() +
+  coord_flip() +
+  scale_fill_manual(values = c("#FF99FF", "#9999FF")) +
+  labs(x = "",
+       fill = "") +
+  theme(text = element_text(family = "Tw Cen MT"),
+        legend.position = "bottom",
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        panel.grid = element_blank())
+
+check_plot
+
+ggsave("Methodology check.png", width = 10, height = 6)
+
+ggplotly(check_plot)
+
+
+```
+
+# Take a look at where segments with 2+ hours with same min speed are located
+
+```{r}
+# Create summarized dataset that contains min speed, hours with that speed, and zone ID
+congestion_wkday_id <- congestion_wkday %>%
+  group_by(id, min_spd) %>%
+  summarize(hour_or_hours = paste(day_part_desc, collapse = ", "))
+
+# Add variable stating number of hours tied for min
+congestion_full <- left_join(congestion_wkday_id, congestion_dups, by = "id") %>%
+  rename(n_min_hours = n)
+
+# Import shapefiles
+con_shp_1 <- st_read("Shapefiles/82850_CongAnal_1_4500_92519_segment_line.shp")
+con_shp_2 <- st_read("Shapefiles/82851_CongAnal_4501_8995_92519_segment_line.shp")
+
+congestion_shp_1 <- left_join(con_shp_1, congestion_full, by = "id")
+congestion_shp_2 <- left_join(con_shp_2, congestion_full, by = "id")
+
+congestion_shp <- rbind(congestion_shp_1, congestion_shp_2) #do NOT use bind_rows
+
+congestion_lab <- congestion_shp %>%
+  mutate(popup = paste0("Number of hours tied for minimum speed: <strong>", n_min_hours, "</strong><br> Min speed: <strong>", min_spd, "</strong"))
+
+labs <- as.list(congestion_lab$popup)
+
+congestion_shp %>%
+  leaflet() %>%
+  addPolygons(color = ~colorNumeric("PuBu", n_min_hours)(n_min_hours),
+      label = lapply(labs, htmltools::HTML),
+      labelOptions = labelOptions(style = list("font-family" = "Segoe UI Light",
+                                               "font-size" = "14px"))) %>%
+  addProviderTiles(providers$CartoDB.Positron)
+
+#st_write(congestion_shp, "Congestion Method Check.shp", "ESRI Shapefile Driver")
+```
+
+# Take a look at segments where congestion is in the off-peak
+
+```{r}
+con_wkday_1 <- left_join(con_shp_1, congestion_wkday, by = "id")
+con_wkday_2 <- left_join(con_shp_2, congestion_wkday, by = "id")
+
+congestion_wkday_shp <- rbind(con_wkday_1, con_wkday_2) #do NOT use bind_rows
+
+st_write(congestion_wkday_shp, "Congestion Method Check on Off-peak.shp", "ESRI Shapefile Driver")
+
+```

@@ -55,7 +55,7 @@ congestion_tidy <- congestion %>%
 
 # Select min speed for weekdays
 congestion_wkday <- congestion_tidy %>%
-  filter(day_type_code == 1 & day_part_code != "00" & day_part_code != "02" & day_part_code != "09" & day_part_code != "19") %>% # Don't include all day, off-peak, peak AM, or peak PM
+  filter(day_type_code == 1 & day_part_code != "00" & day_part_code != "02" & day_part_code != "09" & day_part_code != "19") %>% # Eliminate all day, off-peak, peak AM and peak PM from consideration
   group_by(id) %>%
   mutate(min_spd = min(avg_spd)) %>%
   ungroup() %>%
@@ -177,6 +177,38 @@ congestion_flow_shp <- rbind(ref_wkday_1, ref_wkday_2)
 st_write(congestion_flow_shp, "Shapefiles/Congestion_Flow_All_Hours.shp", "ESRI Shapefile Driver")
 write_csv(missing_con_spds, "Segment IDs Missing Weekday Speed.csv")
 write_csv(missing_flow_spds, "Segment IDs Missing Off-Peak Weekday Speeds.csv")
+
+```
+
+# Congestion using only 5am-9pm hours
+
+```{r}
+congestion_59_wkday <- congestion_tidy %>%
+  filter(day_type_code == 1) %>% # Only include weekdays
+  mutate(day_part_code = as.numeric(day_part_code)) %>% # Make it more convenient to get rid of impertinent hours of day
+  filter(day_part_code >= 7 & day_part_code <= 24) %>%
+  group_by(id) %>%
+  mutate(min_spd = min(avg_spd)) %>%
+  ungroup() %>%
+  filter(avg_spd == min_spd) %>%
+  dplyr::select(id, min_spd) %>%
+  unique()
+
+flow_con_59 <- full_join(congestion_59_wkday, flow_wkday, by = "id")
+
+ref_con_59 <- flow_con_59 %>%
+  mutate(perc_congested = min_spd/off_pk_spd*100) %>%
+  filter(!is.na(perc_congested) & min_spd > 0 & off_pk_spd != 0) # Strip bad data
+
+ref_59_1 <- left_join(con_shp_1, ref_con_59, by = "id")
+ref_59_2 <- left_join(con_shp_2, ref_con_59, by = "id")
+
+congestion_59_flow_shp <- rbind(ref_59_1, ref_59_2)
+
+congestion_59_tidy <- congestion_59_flow_shp %>%
+  filter(!is.na(perc_congested))
+
+st_write(congestion_59_tidy, "Shapefiles/Congestion_Flow_5am_9pm_Tidy.shp", "ESRI Shapefile Driver")
 
 ```
 

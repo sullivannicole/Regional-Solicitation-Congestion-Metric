@@ -142,3 +142,42 @@ congestion_wkday_shp <- rbind(con_wkday_1, con_wkday_2) #do NOT use bind_rows
 st_write(congestion_wkday_shp, "Congestion Method Check on Off-peak.shp", "ESRI Shapefile Driver")
 
 ```
+
+# Congestion (without hour designation) + free-flow speed
+
+```{r}
+# Note only 8,910 segments have weekday speeds for some hour of the day
+congestion_wkday_unique <- congestion_wkday %>%
+  dplyr::select(id, min_spd) %>%
+  unique()
+
+all_ids <- as_tibble(c(1:8995)) %>%
+  rename(id = value)
+
+missing_con_spds <- anti_join(all_ids, congestion_wkday_unique, by = "id")
+
+# Note only 8,734 segments have speeds recorded for off-peak
+flow_wkday <- congestion_tidy %>%
+  filter(day_type_code == "1" & day_part_code == "02") %>%
+  dplyr::select(id, avg_spd) %>%
+  rename(off_pk_spd = avg_spd) %>%
+  unique()
+
+missing_flow_spds <- anti_join(all_ids, flow_wkday, by = "id")
+
+flow_con <- full_join(congestion_wkday_unique, flow_wkday, by = "id")
+
+ref_spd <- flow_con %>%
+  mutate(perc_congested = min_spd/off_pk_spd*100)
+
+ref_wkday_1 <- left_join(con_shp_1, ref_spd, by = "id")
+ref_wkday_2 <- left_join(con_shp_2, ref_spd, by = "id")
+
+congestion_flow_shp <- rbind(ref_wkday_1, ref_wkday_2)
+st_write(congestion_flow_shp, "Shapefiles/Congestion_Flow_All_Hours.shp", "ESRI Shapefile Driver")
+write_csv(missing_con_spds, "Segment IDs Missing Weekday Speed.csv")
+write_csv(missing_flow_spds, "Segment IDs Missing Off-Peak Weekday Speeds.csv")
+
+```
+
+
